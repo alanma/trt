@@ -1,3 +1,4 @@
+cd $(dirname $0)
 if [ ! -d "env" ]; then
     virtualenv env
 fi
