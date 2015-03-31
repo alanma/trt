@@ -1,0 +1,10 @@
+#table-pane .rtable .rtable-border {
+    fill: Gainsboro;
+    stroke: black;
+    stroke-width: 2;
+}
+#table-pane .rrel .rrel-curve {
+    fill: transparent;
+    stroke: black;
+    stroke-width: 2;
+}
