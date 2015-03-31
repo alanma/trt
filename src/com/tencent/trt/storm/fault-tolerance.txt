@@ -1,0 +1,130 @@
+GOAL
+====
+Fault tolerance requires two things:
+1. if worker(a.k.a process)/executor(a.k.a thread) died
+storm will make sure they are brought back by supervisor/nimbus
+2. the states should be restored back
+regarding this, the storm built-in ack mechanism is very hard to use.
+TRT is a runtime build on top of storm. We need to provide exact-once semantics in the runtime. It need to:
+1. not only at-least-once, but also exact-once for both in-memory and persisted state
+2. easy to implement, anything complex such as distributed coordination is NO GO.
+The team is in-experienced and under-staffed
+3. for anyone need to extend the runtime or use it, should be able to understand how fault tolerance is archived.
+
+OVERVIEW
+========
+TRT redesigned a new state guard system to make sure all states will be restored back after restart or crash.
+The idea is if the computation is deterministic and side effect free, we can recompute to rebuild any state,
+then we discard the duplicates from the re-computation to avoid over counting in the downstream or storage.
+It is easier to use than storm built-in ack mechanism primarily because we made the following assumptions
+
+BIG ASSUMPTIONS
+===============
+1. computation code can be replayed without side-effect, and is deterministic
+all side-effects need to be modelled as some kind of "storage"
+2. the spout will read from kafka or similar messaging system
+which can load historic messages, and they are deterministic
+3. the bolt can replay upstream (either spout or another bolt) messages by active re-computation
+the result of re-computation should be similar to what kafka provides
+for same partition, always give back the same ordered messages
+
+The assumption No.3 seems easy, for every kafka partition we can produce per-partition re-computation outputs.
+However, it will be tricky if the downstream partition key is no longer the partition number of kafka.
+For example, if the spout is re-partition the downstream processing by UserId, then for the same UserId might come
+from different spouts, as different kafka partition will contain some message of same UserId.
+So, even we can guarantee the output of computation of same kafka partition is ordered, the arrival order
+of the repartitioned data after the fields grouping to the downstream will be un-ordered,
+as the processing of different spouts are independent.
+
+The easiest solution is never re-partition, or ensure after the repartition the output from different upstream will
+still go to different downstream. This is practically feasible, as in simple aggregation/anomaly detection usage
+the partition can just use the kafka partition number.
+
+If arbitrary repartition need to be used, then we need to ensure a global deterministic computation.
+Given the computation logic of spout/bolt is deterministic
+There are three places the re-computation can change the output:
+1. different input
+2. non-fields grouping (for example shuffle grouping)
+3. fields grouping how to decide which field goes to which particularly named task
+To fix it:
+1. input from kafka partition always go to same named task
+(put storm task index a 1-1 mapping with kafka partition number)
+2. fields grouping only
+3. assume the storm task naming never change, and fields grouping is deterministic
+for given upstream task1, with fields grouping of fields xyz will always go to downstream task2
+If this holds, for a given partition and [the named task] the outputs it produce will be ordered and deterministic
+
+STATES
+======
+There are three kind of states need to be guarded:
+1. the in-memory state of spout
+2. the in-memory state of bolt
+3. the persisted state (database, etc)
+so that:
+1. after crash, the input will be replayed to re-construct the in-memory states
+2. the extra output created will NOT go into the downstream or the storage
+
+PERSISTED STATE
+===============
+Persisted state might suffer from data loss in two situations:
+1. topology starts from recent kafka offsets
+2. spout/node died and restarted by storm
+In general, we need at-least-once semantics here. As the persisted state comes from the in-memory state
+So we relies on the in-memory state being fault tolerant and never miss a output to the storage.
+So, the next question is, what about duplicated output to the storage?
+Can you provide exact-once semantics here?
+
+Because we can assume for same partition, the messages are ordered by a position key (timestamp or kafka offset).
+So we just keep track of a "checkpoint" to record the largest number of the key.
+The output of a result table will be compared with the checkpoint to decide if storage is required.
+input => executor => output => storages => checkpoint
+We can notice there is a problem here, what will happen if the storage is successful but failed to checkpoint?
+Will the same output being persisted twice?
+Yes it will for now. To fix it, we need to make the storage to do de-duplication work or provide checkpoint
+from its own state. For example, database checkpoint can be retrieved by a SQL statement order by.
+Kafka checkpoint can be retrieved by reading from its tails.
+
+SPOUT IN-MEMORY STATE
+=====================
+Spout in-memory state comes directly from kafka. When the spout starts or restarts from a crash, it just seek
+the kafka offsets to a "earlier enough" position to re-build the in-memory state.
+There is no duplicated input problem for spout in-memory state.
+
+BOLT IN-MEMORY STATE
+====================
+Among all three kinds of states, bolt in-memory state is the hardest one to guard. The immediate question is:
+what will happen if a bolt thread/process died? How to rebuild its in-memory state?
+First, the bolt can know it has crashed by leaving a flag in the zk with its name in it during the first startup.
+The bolt can use the upstream result tables to do re-computation up to a "earlier enough" position
+and get back a list of inputs to itself which should rebuild its state before crash.
+
+The re-computation comes with two side-effects:
+1. Say boltA => boltB. If boltA recomputes, it will sends its outputs to boltB. boltB will receive duplicated inputs.
+2. when bolt re-construct its state, we can estimate a position to start from based on the checkpoint used
+for persisted state guard. However, we can not know a accurate position to stop the reconstruction process.
+We will re-play more than what we should, then the input from the upstream will become duplicated input to the bolt.
+
+The solution is de-duplicate the inputs based on the message order. We keep track of the position of each partition.
+So the input is duplicated if it is coming from the same partition, but has smaller position.
+
+EVOLUTION PATH
+==============
+The current design comes a long way of evolution
+1. There was no such thing as fault-tolerance in the beginning.
+Crash or restart will start the computation from the latest point, leaving a big gap in the final graph.
+2. Spout in-memory state is guarded
+Some sort of kafka offset seeker is employed to recalibrate the offset back to where we left it last time
+The initial idea is if we can seek to accurate spot (taking the aggregation window into account),
+we can ensure the continuity of the processing.
+3. Spout in-memory + persisted states are guarded
+We quickly realize there is no such thing as "accurate" spot. Say we have 1 min window and 5 min window chained.
+The right spot to start reading for 1 min and 5 min is inherently different. The only solution is to read from
+"earlier enough" position and let the each window to discard the part of outputs not need to be persisted.
+4. Bolt in-memory state problem
+The bolt in-memory is still vulnerable up to this point. The quick fix is to kill the topology if any bolt died.
+Then we can turn a bolt crash problem into a topology restart problem which we already solved.
+This solution comes with a cost of latency, risk of accuracy and implementation complexity.
+5. Make every states fault tolerant
+By deterministic re-computation and assumption of every task+partition output is ordered,
+we can make all states fault tolerant and not so hard to implement 
+and easy to use for the framework extension writer and user.

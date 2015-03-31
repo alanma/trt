@@ -1,0 +1,16 @@
+/bin
+/env
+/etc
+/lib/tdbus
+/lib/postgresql
+/requirements.txt
+/README
+.svn
+.classpath
+.project
+.settings
+/trt.iml
+/storm
+/var
+/src/com/tencent/application
+/src/com/tencent/graph
