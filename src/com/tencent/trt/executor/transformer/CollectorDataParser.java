@@ -298,21 +298,23 @@ public abstract class CollectorDataParser extends Transformer {
     }
 
     protected void logBadInput(String input, List<Record> outputs, int i, int j, List<Exception> exceptions) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("skip bad input\n");
-        builder.append("input: ");
-        builder.append(input);
-        builder.append('\n');
-        for (int k = i; k < j; k++) {
-            builder.append("output: ");
-            builder.append(outputs.get(k).toString());
+        if (LOGGER.isDebugEnabled()) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("skip bad input\n");
+            builder.append("input: ");
+            builder.append(input);
             builder.append('\n');
+            for (int k = i; k < j; k++) {
+                builder.append("output: ");
+                builder.append(outputs.get(k).toString());
+                builder.append('\n');
+            }
+            for (Exception exception : exceptions) {
+                builder.append("exception: ");
+                builder.append(exception.toString());
+                builder.append('\n');
+            }
+            LOGGER.debug(builder.toString());
         }
-        for (Exception exception : exceptions) {
-            builder.append("exception: ");
-            builder.append(exception.toString());
-            builder.append('\n');
-        }
-        LOGGER.debug(builder.toString());
     }
 }

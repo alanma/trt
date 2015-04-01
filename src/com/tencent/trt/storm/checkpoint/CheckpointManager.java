@@ -43,7 +43,7 @@ public abstract class CheckpointManager implements Serializable, CommandHandler 
     }
 
     public boolean shouldPersist(CheckpointKey checkpointKey, RecordSchema schema, RecordBatch recordBatch, long baselineCheckpoint) {
-        boolean isStartingUp = System.currentTimeMillis() - createdAt < 1000;
+        boolean isStartingUp = System.currentTimeMillis() - createdAt < 3000;
         long outputCheckpoint = recordBatch.getCheckpoint();
         boolean shouldPersist = !(baselineCheckpoint > 0 && outputCheckpoint < baselineCheckpoint);
         if (!shouldPersist) {

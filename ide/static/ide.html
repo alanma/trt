@@ -95,17 +95,23 @@
         y: 100,
         tableName: 'table1'
     });
-    table2 = addTable({
+    table21 = addTable({
         x: 300,
-        y: 200,
-        tableName: 'table2',
+        y: 50,
+        tableName: 'table21',
+        parents: [table1]
+    });
+    table22 = addTable({
+        x: 300,
+        y: 150,
+        tableName: 'table22',
         parents: [table1]
     });
     table3 = addTable({
         x: 500,
         y: 100,
         tableName: 'table3',
-        parents: [table2]
+        parents: [table21, table22]
     });
 </script>
 </body>
